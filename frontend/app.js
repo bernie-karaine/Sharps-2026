@@ -296,7 +296,7 @@ document.getElementById("btn-fetch-leagues").onclick = async () => {
       .map(
         (m, i) => `
         <label>
-          <input type="checkbox" data-idx="${i}" checked />
+          <input type="checkbox" data-idx="${i}" />
           ${new Date(m.start_time).toLocaleString()} — ${m.home_team} vs ${m.away_team}
           <span class="dim">(${m.league_name})</span>
         </label>`
