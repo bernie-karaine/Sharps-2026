@@ -48,7 +48,31 @@ CONFIG = {
     "early_late_split_hours": 24,  # boundary between "early week" and "late window"
     "min_snapshots_for_signal": 2,
     "min_age_hours_for_signal": 2.0,
+    # velocity_shape() only - kept separate from x2_noise_floor_pp on
+    # purpose so tuning the real scored threshold never silently changes
+    # this still-unproven, watch-only signal too.
+    "velocity_floor_pp": 0.30,
+    "velocity_window_hours": 3.0,
+    "velocity_min_window_hours": 0.25,  # 15 min - below this, a window is too short to be meaningful given real poll spacing
+    "velocity_steam_ratio": 0.70,
+    "velocity_drift_ratio": 0.20,
 }
+
+# Rejected: per-league / liquidity-aware thresholds (scaling ah_shift_
+# threshold and x2_noise_floor_pp down for thin markets, on the theory
+# that a casual bettor can swing a low-limit market by accident, so a
+# bigger relative move should be required there to count as a real
+# signal). Backtested against 2 real MJP rounds by bucketing matches into
+# thin/mid/thick liquidity tiers (opening moneyline limit <$1,000 /
+# $1,000-3,000 / >=$3,000): thin markets showed LOWER average 1X2
+# displacement (1.90pp) and reached sharp/strong_sharp far less often
+# (25%) than mid/thick markets (69-100%) - despite being tracked for MORE
+# hours on average (92.7h vs 65.2h), which rules out "shorter observation
+# window" as the explanation. The theory predicted thin markets would
+# show MORE apparent (noisy) movement, needing a stricter bar; the data
+# shows the opposite - thin leagues are simply quieter overall, most
+# likely because sharp money concentrates on bigger leagues rather than
+# bothering with niche ones. Not implemented.
 
 
 def _first_last(series: list[dict], field: str) -> tuple[Any, Any]:
@@ -98,7 +122,131 @@ def x2_displacement(moneyline_series: list[dict]) -> dict:
     return result
 
 
+def velocity_shape(moneyline_series: list[dict]) -> dict:
+    """Classifies HOW a 1X2 move happened over time, not just how big it
+    got: a fast move concentrated in the recent window ("steam"), an old
+    move that already happened and has since gone quiet ("drift"), a move
+    still actively accumulating ("building"), one now heading back the
+    other way ("reversal"), or one that swung away from the opening line
+    and came most of the way back by the time we're checking ("swung_back").
+
+    WATCH-ONLY - not wired into ah_score, x2_score, or the tier badge.
+    Backtested against 2 real MJP rounds (32 matches, one confirmed non-
+    jackpot test fixture excluded) on the AH line first: that line only
+    ever moved in single atomic 0.25pt jumps, giving this classification
+    nothing to actually distinguish. Re-run on the 1X2 series instead
+    (real, continuous movement, not quantized steps), across 3h/6h/12h
+    windows: "steam" and "building" calls were right about 70-100% of the
+    time, "drift" calls only about 20-50% - a real, consistent pattern
+    across all three windows tried. But the samples behind each label
+    were tiny (as few as 2-5 decisive matches per label per window) -
+    promising, not proven. Surfaced on the dashboard so it can keep being
+    checked against real outcomes as more rounds come in, exactly like
+    every other number in this file that started as a plain guess.
+
+    Two known gaps, found and fixed after the first version shipped:
+    - The look-back window used to be fixed (e.g. always 3h), which meant
+      any match tracked for under 2x that window got no read at all,
+      however big a move happened. It now shrinks to fit whatever history
+      actually exists (down to `velocity_min_window_hours`), so an early
+      real move still gets classified, just against a shorter recent
+      slice - and if there genuinely isn't a usable window yet, it still
+      honestly says "insufficient_history" rather than guessing.
+    - A big swing that fully reverts by the time of the latest snapshot
+      used to be invisible: opening-vs-current would show ~0 change, so
+      it was called "quiet" even though something real happened along the
+      way. Now the single largest deviation from the opening value,
+      anywhere in the whole series, is tracked too - if that peak cleared
+      the floor even though the net change didn't, it's labelled
+      "swung_back" instead of being silently absorbed into "quiet".
+    """
+    c = CONFIG
+    configured_window = c["velocity_window_hours"]
+    min_window = c["velocity_min_window_hours"]
+    floor = c["velocity_floor_pp"]
+    result = {
+        "label": None,
+        "total_change_pp": 0.0,
+        "recent_change_pp": None,
+        "peak_change_pp": None,
+        "window_hours": configured_window,
+    }
+
+    valid = [
+        s for s in moneyline_series
+        if s.get("fair_home_prob") is not None and s.get("fair_away_prob") is not None
+        and s.get("status") != "suspended"
+    ]
+    if len(valid) < 2:
+        return result
+
+    opening, current = valid[0], valid[-1]
+    home_pp = (current["fair_home_prob"] - opening["fair_home_prob"]) * 100.0
+    away_pp = (current["fair_away_prob"] - opening["fair_away_prob"]) * 100.0
+    field = "fair_home_prob" if abs(home_pp) >= abs(away_pp) else "fair_away_prob"
+    total_change = home_pp if field == "fair_home_prob" else away_pp
+    result["total_change_pp"] = total_change
+
+    opening_val = opening[field]
+    peak_point = max(valid, key=lambda s: abs((s[field] - opening_val) * 100.0))
+    peak_change = (peak_point[field] - opening_val) * 100.0
+    result["peak_change_pp"] = peak_change
+
+    if abs(total_change) < floor:
+        result["label"] = "swung_back" if abs(peak_change) >= floor else "quiet"
+        return result
+
+    last_dt, first_dt = current["captured_at"], opening["captured_at"]
+    total_history_hours = (last_dt - first_dt).total_seconds() / 3600.0
+    effective_window = min(configured_window, total_history_hours / 2.0)
+    if effective_window < min_window:
+        result["label"] = "insufficient_history"
+        return result
+    result["window_hours"] = effective_window
+
+    cutoff = last_dt - timedelta(hours=effective_window)
+    older = [s for s in valid if s["captured_at"] <= cutoff]
+    if not older:
+        result["label"] = "insufficient_history"
+        return result
+
+    baseline = older[-1]
+    recent_home_pp = (current["fair_home_prob"] - baseline["fair_home_prob"]) * 100.0
+    recent_away_pp = (current["fair_away_prob"] - baseline["fair_away_prob"]) * 100.0
+    recent_change = recent_home_pp if field == "fair_home_prob" else recent_away_pp
+    result["recent_change_pp"] = recent_change
+
+    if (recent_change > 0) != (total_change > 0) and abs(recent_change) >= floor:
+        result["label"] = "reversal"
+        return result
+
+    ratio = abs(recent_change) / abs(total_change) if total_change else 0.0
+    if ratio >= c["velocity_steam_ratio"]:
+        result["label"] = "steam"
+    elif ratio <= c["velocity_drift_ratio"]:
+        result["label"] = "drift"
+    else:
+        result["label"] = "building"
+    return result
+
+
 def limit_drop_pct(series: list[dict]) -> float:
+    """Only ever measures a drop - a rise is clamped to 0.0, deliberately.
+
+    A "limit rises when Pinnacle is confident in the price" signal was
+    investigated and rejected after checking it against 2 real MJP rounds
+    (33 matches): every single match showed a net limit *rise*, never a
+    drop, and the rise percentages repeated identically across unrelated
+    matches in the same league (e.g. two different Czech First Liga
+    matches both went +400% ML, two different Serie A matches both went
+    +344.4%). That pattern is consistent with Pinnacle mechanically
+    ramping a new market from a small placeholder limit up to its
+    standard size on a fixed per-league schedule, independent of any
+    money actually landing on that specific match - not with the book
+    reacting to real order flow. Reviving a rise-based signal would need
+    a real per-league baseline ramp curve to detect deviations *from*,
+    not just "did it rise," which the 2-round sample can't support yet.
+    """
     opening, current = _first_last(series, "limit_amount")
     if not opening or opening <= 0 or current is None:
         return 0.0
@@ -197,6 +345,7 @@ def compute_match_score(
             "contested": False,
             "ah": ah_line_shift(spread_series),
             "x2": x2_displacement(moneyline_series),
+            "velocity": velocity_shape(moneyline_series),
             "moneyline_limit_drop_pct": limit_drop_pct(moneyline_series),
             "spread_limit_drop_pct": limit_drop_pct(spread_series),
             "ah_score": 0.0,
@@ -212,7 +361,31 @@ def compute_match_score(
     sp_limit_drop = limit_drop_pct(spread_series)
     max_limit_drop = max(ml_limit_drop, sp_limit_drop)
 
-    ah_score = _score_ah(ah["magnitude"])
+    # Backtested against 2 real MJP rounds: every nonzero AH shift observed
+    # was exactly the same 0.25 points, yet the matching probability move on
+    # that same market ranged from 0.47pp to 9.73pp - raw points hide a real
+    # ~20x spread in how much the move actually meant. The safe fix is NOT
+    # to swap points for probability everywhere: once the line has actually
+    # stepped, the probability read is contaminated by the target changing
+    # underneath it (a harder/easier line mechanically moves the covering
+    # probability - see the "Reading the Tape" manual's chart 5 callout).
+    # So the probability-based read only ever substitutes in when the line
+    # itself hasn't moved - the case the tool currently scores as a flat
+    # zero even if real positioning was happening at that fixed line the
+    # whole time. x2_displacement() is reused as-is (rather than a new
+    # function) since it already degrades gracefully on a two-way market:
+    # fair_draw_prob is always None for spread rows, so the draw slot just
+    # stays 0.0. Its pp thresholds are reused too, for lack of any real
+    # calibration data yet for this specific flat-line case - same
+    # provisional-until-backtested status as every other number here.
+    ah_prob = x2_displacement(spread_series)
+    if ah["magnitude"] >= CONFIG["ah_shift_threshold"]:
+        ah_score = _score_ah(ah["magnitude"])
+        ah_effective_direction = ah["direction"]
+    else:
+        ah_score = _score_x2(ah_prob["magnitude"])
+        ah_effective_direction = ah_prob["direction"]
+
     x2_score = _score_x2(x2["magnitude"])
     limit_bonus = _score_limit(max_limit_drop)
 
@@ -230,15 +403,19 @@ def compute_match_score(
     contested = detect_contested(moneyline_series, kickoff)
 
     # Sharp side priority: AH shift first (sharps move AH first per the
-    # spec), then largest 1X2 displacement. A contested result keeps the
-    # most recent window's direction visible but flags the disagreement
-    # rather than picking a side with false confidence.
-    if ah["direction"]:
-        sharp_side = ah["direction"]
+    # spec), then largest 1X2 displacement. ah_effective_direction falls
+    # back to the flat-line probability read (see above) when the line
+    # itself hasn't moved, so early positioning at an unchanged number
+    # still gets to set the side instead of falling through to 1X2.
+    if ah_effective_direction:
+        sharp_side = ah_effective_direction
     elif x2["direction"]:
         sharp_side = x2["direction"]
     else:
         sharp_side = None
+
+    ah["prob_fallback_used"] = ah["magnitude"] < CONFIG["ah_shift_threshold"]
+    ah["prob_fallback"] = ah_prob
 
     return {
         "tier": classify_tier(total) if not contested else "contested",
@@ -246,6 +423,7 @@ def compute_match_score(
         "contested": contested,
         "ah": ah,
         "x2": x2,
+        "velocity": velocity_shape(moneyline_series),
         "moneyline_limit_drop_pct": ml_limit_drop,
         "spread_limit_drop_pct": sp_limit_drop,
         "ah_score": ah_score,
@@ -307,7 +485,8 @@ async def compute_and_store_score(matchup_id: int, kickoff: datetime) -> dict:
         insert into signals (matchup_id, signal_type, direction, magnitude, detail_json)
         values ($1,'ah_line_shift',$2,$3,$4::jsonb),
                ($1,'x2_displacement',$5,$6,$7::jsonb),
-               ($1,'limit_movement',$8,$9,$10::jsonb)
+               ($1,'limit_movement',$8,$9,$10::jsonb),
+               ($1,'velocity_shape',$11,$12,$13::jsonb)
         """,
         matchup_id,
         result["ah"]["direction"],
@@ -324,5 +503,11 @@ async def compute_and_store_score(matchup_id: int, kickoff: datetime) -> dict:
                 "spread_limit_drop_pct": result["spread_limit_drop_pct"],
             }
         ),
+        # "direction" column repurposed as the shape label (steam/drift/
+        # building/reversal/quiet/None) - this signal has no home/away
+        # side of its own, it's watch-only, see velocity_shape() docstring.
+        result["velocity"]["label"],
+        abs(result["velocity"]["total_change_pp"]),
+        db.to_jsonb(result["velocity"]),
     )
     return result

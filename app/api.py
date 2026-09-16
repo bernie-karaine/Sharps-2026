@@ -263,6 +263,26 @@ async def match_detail(matchup_id: int):
         matchup_id,
     )
 
+    # Full history of every velocity_shape check ever run for this match -
+    # a fresh row is inserted every poll cycle, so "was this ever steam
+    # earlier" is already sitting in the data even after the label has
+    # since moved on to something else. Compressed to only the moments the
+    # label actually changed, not every single poll that repeated it.
+    velocity_rows = await db.fetch(
+        """
+        select computed_at, direction as label from signals
+        where matchup_id = $1 and signal_type = 'velocity_shape'
+        order by computed_at asc
+        """,
+        matchup_id,
+    )
+    velocity_transitions = []
+    last_label = None
+    for r in velocity_rows:
+        if r["label"] != last_label:
+            velocity_transitions.append({"at": r["computed_at"], "label": r["label"]})
+            last_label = r["label"]
+
     # Full raw time-series for independent analysis, grouped by market so the
     # frontend can render one chart per series regardless of what the signal
     # engine concluded. Main lines (period 0, non-alternate) drive the
@@ -299,6 +319,7 @@ async def match_detail(matchup_id: int):
         "latest_score": dict(latest_score) if latest_score else None,
         "score_history": [dict(r) for r in score_history],
         "latest_signals": signals_by_type,
+        "velocity_transitions": velocity_transitions,
         "series": {
             "moneyline_main": series["moneyline"],
             "spread_main": series["spread"],

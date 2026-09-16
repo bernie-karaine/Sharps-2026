@@ -180,6 +180,16 @@ tbody tr:hover { background: var(--bg-elevated); }
 .card .value { font-size: 18px; color: var(--accent); }
 .card .sub { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
 
+.card-experimental { border-style: dashed; border-color: var(--tier-sharp); }
+.card-experimental .value { color: var(--tier-sharp); font-size: 15px; }
+.pill-experimental {
+  font-size: 9px; text-transform: none; letter-spacing: 0; font-weight: normal;
+  color: var(--tier-sharp); border: 1px solid var(--tier-sharp); border-radius: 8px;
+  padding: 1px 6px; margin-left: 6px; vertical-align: middle;
+}
+.card-wide { flex-basis: 100%; }
+.vel-history { margin-top: 6px; word-break: break-word; }
+
 .raw-data h3, .raw-table-section h3 { color: var(--accent); font-size: 13px; border-top: 1px solid var(--border); padding-top: 16px; }
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px; }
 .chart-block h4 { font-size: 11px; color: var(--text-dim); margin: 0 0 6px 0; text-transform: uppercase; }
