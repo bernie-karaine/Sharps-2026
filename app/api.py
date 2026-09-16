@@ -263,25 +263,32 @@ async def match_detail(matchup_id: int):
         matchup_id,
     )
 
-    # Full history of every velocity_shape check ever run for this match -
-    # a fresh row is inserted every poll cycle, so "was this ever steam
-    # earlier" is already sitting in the data even after the label has
-    # since moved on to something else. Compressed to only the moments the
-    # label actually changed, not every single poll that repeated it.
-    velocity_rows = await db.fetch(
-        """
-        select computed_at, direction as label from signals
-        where matchup_id = $1 and signal_type = 'velocity_shape'
-        order by computed_at asc
-        """,
-        matchup_id,
-    )
-    velocity_transitions = []
-    last_label = None
-    for r in velocity_rows:
-        if r["label"] != last_label:
-            velocity_transitions.append({"at": r["computed_at"], "label": r["label"]})
-            last_label = r["label"]
+    # Full history of every velocity_shape / x2_displacement check ever run
+    # for this match - a fresh row is inserted every poll cycle, so "was
+    # this ever steam" or "was home ever leading" is already sitting in the
+    # data even after the label has since moved on to something else.
+    # Compressed to only the moments the label actually changed, not every
+    # single poll that repeated it.
+    async def _label_transitions(signal_type: str) -> list[dict]:
+        rows = await db.fetch(
+            """
+            select computed_at, direction as label from signals
+            where matchup_id = $1 and signal_type = $2
+            order by computed_at asc
+            """,
+            matchup_id,
+            signal_type,
+        )
+        transitions = []
+        last_label = None
+        for r in rows:
+            if r["label"] != last_label:
+                transitions.append({"at": r["computed_at"], "label": r["label"]})
+                last_label = r["label"]
+        return transitions
+
+    velocity_transitions = await _label_transitions("velocity_shape")
+    x2_transitions = await _label_transitions("x2_displacement")
 
     # Full raw time-series for independent analysis, grouped by market so the
     # frontend can render one chart per series regardless of what the signal
@@ -320,6 +327,7 @@ async def match_detail(matchup_id: int):
         "score_history": [dict(r) for r in score_history],
         "latest_signals": signals_by_type,
         "velocity_transitions": velocity_transitions,
+        "x2_transitions": x2_transitions,
         "series": {
             "moneyline_main": series["moneyline"],
             "spread_main": series["spread"],

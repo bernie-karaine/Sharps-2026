@@ -188,7 +188,12 @@ tbody tr:hover { background: var(--bg-elevated); }
   padding: 1px 6px; margin-left: 6px; vertical-align: middle;
 }
 .card-wide { flex-basis: 100%; }
-.vel-history { margin-top: 6px; word-break: break-word; }
+
+.history-dropdown { margin-top: 6px; font-size: 11px; color: var(--text-dim); }
+.history-dropdown summary { cursor: pointer; color: var(--accent); }
+.history-dropdown summary:hover { color: var(--tier-sharp); }
+.history-dropdown ol { margin: 6px 0 0 0; padding-left: 18px; }
+.history-dropdown li { margin-bottom: 2px; word-break: break-word; }
 
 .raw-data h3, .raw-table-section h3 { color: var(--accent); font-size: 13px; border-top: 1px solid var(--border); padding-top: 16px; }
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px; }

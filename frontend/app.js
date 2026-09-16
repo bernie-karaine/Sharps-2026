@@ -62,6 +62,17 @@ function fmtPp(v) {
 function fmtNum(v, d = 2) {
   return v === null || v === undefined ? "—" : Number(v).toFixed(d);
 }
+function renderHistoryDropdown(transitions) {
+  const entries = (transitions || []).filter((t) => t.label);
+  if (entries.length === 0) return "";
+  const rows = entries
+    .map(
+      (t) =>
+        `<li>${new Date(t.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} — ${t.label}</li>`
+    )
+    .join("");
+  return `<details class="history-dropdown"><summary>History (${entries.length})</summary><ol>${rows}</ol></details>`;
+}
 function toUnixSeconds(iso) {
   return Math.floor(new Date(iso).getTime() / 1000);
 }
@@ -385,11 +396,12 @@ function renderCards(detail) {
     quiet: "Quiet — no meaningful move",
     insufficient_history: "Not enough history yet",
   };
-  const velHistory = detail.velocity_transitions || [];
-  const velHistoryLine = velHistory
-    .filter((v) => v.label)
-    .map((v) => `${new Date(v.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} ${v.label}`)
-    .join(" → ");
+  const velHistoryDropdown = renderHistoryDropdown(detail.velocity_transitions);
+  const x2HistoryDropdown = renderHistoryDropdown(detail.x2_transitions);
+  const velSideNames = { home: "home", draw: "draw", away: "away" };
+  const velLabelText = vel.label
+    ? `${velLabels[vel.label] || vel.label}${vel.side && vel.label !== "quiet" && vel.label !== "insufficient_history" ? ` (${velSideNames[vel.side] || vel.side})` : ""}`
+    : "—";
 
   cardsEl.innerHTML = `
     <div class="card">
@@ -411,6 +423,8 @@ function renderCards(detail) {
       <h4>1X2 displacement</h4>
       <div class="value">${fmtPp(x2.home_pp)} H / ${fmtPp(x2.draw_pp)} D / ${fmtPp(x2.away_pp)} A</div>
       <div class="sub">from true opening line</div>
+      ${x2.swung_back ? `<div class="sub">⚠ swung back: peaked at ${fmtPp(x2.peak_pp)} ${x2.peak_side} earlier, since retraced — not scored, shown for context only</div>` : ""}
+      ${x2HistoryDropdown}
     </div>
     <div class="card">
       <h4>Limit movement</h4>
@@ -419,11 +433,11 @@ function renderCards(detail) {
     </div>
     <div class="card card-experimental card-wide">
       <h4>Move shape <span class="pill-experimental">watch only</span></h4>
-      <div class="value">${vel.label ? (velLabels[vel.label] || vel.label) : "—"}</div>
+      <div class="value">${velLabelText}</div>
       <div class="sub">${vel.total_change_pp !== undefined && vel.label && vel.label !== "quiet" && vel.label !== "insufficient_history"
         ? `${fmtPp(vel.total_change_pp)} total${vel.recent_change_pp != null ? `, ${fmtPp(vel.recent_change_pp)} in the last ${vel.window_hours.toFixed(2)}h` : ""}${vel.peak_change_pp != null && vel.label === "swung_back" ? ` (peaked at ${fmtPp(vel.peak_change_pp)})` : ""}`
         : "Not scored — promising in early testing, not yet proven"}</div>
-      ${velHistoryLine ? `<div class="sub vel-history">History: ${velHistoryLine}</div>` : ""}
+      ${velHistoryDropdown}
     </div>
   `;
 }
